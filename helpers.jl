@@ -1,0 +1,56 @@
+### helper, internal functions 
+
+# corresponds to <1, 1--4, 5--10, 11--15, 16--23, 24--49, 50--64, 65++
+const AG_BRAC = [0:51, 52:207, 208:519, 520:779, 780:1195, 1196:2547, 2548:3327, 3328:5251]
+function get_age_distribution() 
+    # gets the age distribution of the population
+    _ret = countmap([findfirst(Base.Fix1(∈, y.age), AG_BRAC) for y in humans])
+end
+
+function get_detailed_age_distribution() 
+    # gets the age distribution of the population
+    _ret = countmap([convert_week_to_year(y.age) for y in humans])
+    sort(collect(_ret), by = x->x[1])
+end
+
+@inline convert_year_to_wkrange(x::Int64) = (x*52):(x*52)+51 # convert year to week range
+@inline convert_week_to_year(x::Int64) = floor(Int64, x/52)
+
+function infoid(id)
+    # an agent information function
+    x = humans[id]
+    agt = x.age == 52
+    nd = x.age == 5201
+    println("x.idx: $(x.idx) x.age: $(x.age), <1 -> 1-4? $agt, nat death: $nd")
+end
+
+### ONE-TIME USE / DEPCRECATED
+
+function population_age_equilibrium(timetorun) 
+    # this function was only used one to run the model for a certain time period
+    # with only age dynamics to get the movement of the population aging through the system 
+    # the CSV file was only used for visualization purposes and debugging 
+    # I just used the print statement and copied the distribution to the init function
+
+    # this function was run July 7th to get the population at the end of 10000 weeks 
+    # and then the age distribution was used to initialize the population in the init_agents() function
+    # note: this function may not be useful (or even work) as the model grows
+    
+    # steps to run this function for non-equilibrium age distribution
+    # run init_state() to initialize the population
+    # run init_agents() to initialize the agents with age distribution 
+    res = zeros(Int64, timetorun, 8) # results 
+    for i = 1:timetorun
+        # this code is a subset of the code in timestep() 
+        for x in humans
+            x.age += 1
+        end
+        age_dynamics()
+        distr = get_age_distribution()
+        #display(distr)
+        res[i, :] .= collect(values(distr))
+    end
+    #writedlm("population_age_equilibrium.csv", res, ',')
+    println(getindex.(get_detailed_age_distribution(), 2))
+    return res
+end
