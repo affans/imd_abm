@@ -1,7 +1,10 @@
 ### helper, internal functions 
 
 # corresponds to <1, 1--4, 5--10, 11--15, 16--23, 24--49, 50--64, 65++
-const AG_BRAC = [0:51, 52:207, 208:519, 520:779, 780:1195, 1196:2547, 2548:3327, 3328:5251]
+const AG_BRAC = [0:51, 52:207, 208:519, 520:779, 780:1195, 1196:2547, 2548:3327, 3328:5252] 
+# end should be 5251 but we add 1 more because of the way timestep() and age_dynamics() work 
+# (the natural death happens after finding the age group -- and if they increase age to 5252, it will error)
+
 function get_age_distribution() 
     # gets the age distribution of the population
     _ret = countmap([findfirst(Base.Fix1(∈, y.age), AG_BRAC) for y in humans])
@@ -11,6 +14,18 @@ function get_detailed_age_distribution()
     # gets the age distribution of the population
     _ret = countmap([convert_week_to_year(y.age) for y in humans])
     sort(collect(_ret), by = x->x[1])
+end
+
+function get_disease_prop() 
+    # gets the initial disease distribution of the population
+    res = zeros(Int64, length(AG_BRAC), 6+1) #  +1 for total number of pop (without calling get_age_distribution()) 
+    # columns: total pop size, not infected, infect C, infect Y, infect W
+    for x in humans
+        res[x.ag, Int(x.inf)] += 1 
+        res[x.ag, 7] += 1 # gets the total number of people in that age group
+    end
+    res = hcat(res, vec(sum(res[:, 2:4], dims=2)))
+    return res
 end
 
 @inline convert_year_to_wkrange(x::Int64) = (x*52):(x*52)+51 # convert year to week range
