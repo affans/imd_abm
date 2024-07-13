@@ -23,7 +23,7 @@ Base.@kwdef mutable struct ModelParameters
     popsize::Int64 = 100000
     numofsims::Int64 = 100
     maxtime::Int64 = 520 # in weeks 
-    beta::Float64 = 0.5
+    beta::Vector{Float64} = [0.5, 0.5, 0.5] # for Carriage 
     prob_of_imd::Float64 = 0.001
 end
 # constant variables
@@ -37,14 +37,33 @@ const DISTR_RECOVER = Poisson(244)
 include("helpers.jl")
 
 ### Main simulate function 
-function simulation() 
-    init_state()
+function simulate() 
+    #init_state()
     init_agents() # reset agents
     init_disease()
-    for i in 1:1000 #p.maxtime
-       timestep()
+    
+    # maximum model time
+    max_time = p.maxtime 
+    
+    # data collection
+    res_carriage = zeros(Int64, 3, max_time) # 3 rows for C, W, Y since      
+    println("running simulation, time: $(max_time)")
+    for t in 1:max_time #p.maxtime
+        timestep()
+        _c, _w, _y = collect_data()
+        res_carriage[1:3, t] .= (_c, _w, _y)
     end
-    return
+    return res_carriage
+end
+
+function collect_data()
+    # keep optimized since this runs in the time loop
+    _c, _w, _y = 0, 0, 0  
+    distr = countmap(Int.([x.inf for x in humans]))
+    haskey(distr, Int(CARC)) && (_c = distr[2])
+    haskey(distr, Int(CARW)) && (_w = distr[3])
+    haskey(distr, Int(CARY)) && (_y = distr[4])    
+    return (_c, _w, _y)
 end
 
 ### Iniltialization Functions
@@ -60,12 +79,11 @@ function init_state(ip::ModelParameters)
     # resize the human array to change population size
     resize!(humans, p.popsize)
 
-    @debug "Initialization state complete... "
+    @debug "Initialization state complete..."
     return
 end
 
 function init_agents() 
-    @debug "Initializing agents (age distribution)..."
     # non-equilibrium age distribution
     # pop_distr = [1102, 1077, 1118, 1137, 1163, 1187, 1218, 1229, 1225, 1221, 1223, 1236, 1262, 1289, 1338, 1335, 1312, 1300, 1308, 1296, 1289, 1312, 1313, 1292, 1290, 1293, 1302, 1325, 1353, 1374, 1405, 1426, 1430, 1389, 1365, 1349, 1352, 1350, 1322, 1341, 1338, 1318, 1311, 1257, 1229, 1213, 1171, 1183, 1160, 1175, 1231, 1304, 1283, 1234, 1207, 1210, 1228, 1274, 1304, 1303, 1306, 1302, 1277, 1252, 1239, 1214, 1159, 1130, 1088, 1040, 998, 948, 901, 873, 850, 891, 625, 595, 573, 573, 484, 427, 385, 351, 321, 279, 251, 224, 187, 167, 145, 125, 105, 84, 68, 53, 40, 30, 21, 15, 23]
 
@@ -87,22 +105,23 @@ function init_agents()
         x.age = sampled_ages[i]
         x.ag = findfirst(Base.Fix1(∈, sampled_ages[i]), AG_BRAC)
     end
-    @debug "...agents initialized" get_age_distribution()
-    #return get_age_distribution()
+    return 
 end
 
 function init_disease()
     @debug "Initializing disease..."
-
     ag_carriage_prev = rand.([Uniform(0.028, 0.085), Uniform(0.031, 0.091), 
                                 Uniform(0.042, 0.118), Uniform(0.055, 0.174), 
                                 Uniform(0.106, 0.334), Uniform(0.053, 0.264), 
                                 Uniform(0.034, 0.125), Uniform(0.026, 0.090)])
 
     _sero_prop = [0.0, 0.0, 0.0] # Index: 1=C, 2=W, 3=Y -- ORDER MATTERS
-    _sero_prop[1] = rand(Uniform(0.41, 0.47)) # SERO C 
-    _sero_prop[2] = rand(Uniform(0.02, 0.05)) # SERO ּW
+    _sero_prop[1] = rand(Uniform(0.41, 0.47)) # SERO C
+    _sero_prop[2] = rand(Uniform(0.02, 0.05)) # SERO ּW    
     _sero_prop[3] = 1 - _sero_prop[1] - _sero_prop[2] # SERO Y
+
+    _beta = 0.001
+    p.beta = [_beta*_sero_prop[1], _beta*_sero_prop[2], _beta*_sero_prop[3]] # set the beta values for the disease
     sero_pop = Categorical(_sero_prop)
     @debug "...sero props $_sero_prop"
 
@@ -128,9 +147,10 @@ function timestep()
         x.age += 1 
         x.ag = findfirst(Base.Fix1(∈, x.age), AG_BRAC)
         x.tis += 1 
-        swaps = naturalhistory(x) # move through the natural history of the disease
+        swaps = naturalhistory(x) # move through the natural history of the disease first         
         activate_swaps(x) # deal with the swap dynamics either through naturalhistory OR transmission
     end
+    (inc, wc) = transmission() # naturalhistory affects swaps of carriage and rec. Swap for carriage is irrelevant, swap might rec -> sus, but activate_swaps comes after, it doesn matter
     age_dynamics() 
     return 
 end
@@ -157,10 +177,6 @@ function naturalhistory(x::Human)
     return cnt
 end
 
-function transmission() 
-    error("not implemented yet")
-end
-
 function activate_swaps(x::Human)
     if x.swap ≠ UNDEF 
         if x.swap in (CARC, CARW, CARY)
@@ -180,7 +196,7 @@ end
 @inline function move_to_carriage(x::Human) 
     x.inf = x.swap # so will be CARC, CARY, CARW
     x.c_inf += 1 # raise infection cnt
-    x.st = round(Int16, rand(DISTR_CARRIAGE)) 
+    x.st = round(Int16, 4*rand(DISTR_CARRIAGE)) 
 end
 
 @inline function move_to_imd(x::Human) 
@@ -205,23 +221,23 @@ function age_dynamics()
 
     # get the number of agents switch from <1 to 1-4
     num_to_die = length(findall(x -> x.age == 52, humans)) # only length because we need to select this many random
-    # find all individuals that will die due to natural death
+    # # find all individuals that will die due to natural death
     deathids = findall(x -> x.age == 5252, humans)
 
-    #println("total number of newborns to introduce: $num_to_die")
-    #println("total number of natural deaths: $(length(deathids))")
+    # #println("total number of newborns to introduce: $num_to_die")
+    # #println("total number of natural deaths: $(length(deathids))")
 
-    # need to a total of `num_to_die` including the natural deaths 
-    # so fill in the rest of deaths by randomly sampling from the population
-    # ensure that those transitioning to 1-4 and 100+ are not part of sampling
+    # # need to a total of `num_to_die` including the natural deaths 
+    # # so fill in the rest of deaths by randomly sampling from the population
+    # # ensure that those transitioning to 1-4 and 100+ are not part of sampling
     eligible = findall(x -> x.age > 52 && x.age < 5200, humans)
-
-    # add to the death IDs randomly selected ones 
+    
+    # # add to the death IDs randomly selected ones 
     for _ in 1:(num_to_die - length(deathids))
         push!(deathids, rand(eligible))
     end
 
-    # turn them into newborns! Use infoid() to print statistics
+    # # turn them into newborns! Use infoid() to print statistics
     newborn.(deathids)
     return 
 end
@@ -238,6 +254,82 @@ end
     x.tis = 0
     x.st = typemax(Int16)
     return
+end
+
+function transmission() 
+    incidence_cnt = 0 
+    wasted_contact = 0 
+    inf_agents = humans[findall(x -> x.inf ∈ (CARC, CARY, CARY), humans)]
+    length(inf_agents) == 0 && return (incidence_cnt, wasted_contact) # no carriers to transmit
+    buckets = [findall(x -> x.ag == i, humans) for i = 1:length(AG_BRAC)]
+    shuffle!.(buckets)
+    @inbounds for x in inf_agents
+        # for this carrier, sample the number of contacts and distribute them 
+        xinf = x.inf # get infection status to get the right beta 
+        if xinf == CARC
+            beta = p.beta[1]
+        elseif xinf == CARW
+            beta = p.beta[2]
+        elseif xinf == CARY
+            beta = p.beta[3]
+        end
+        cpview = @view cp[:, x.ag]
+        num_contacts = 0.7*rand(cm[x.ag]) # 30% of contacts are not type of contacts where disease will transmit
+        
+        @inbounds for i in 1:length(AG_BRAC)
+            agc = round(Int64, cpview[i]*num_contacts)
+            @inbounds for _ in 1:agc # go through each count 
+                idx = 1+rand(Int32)&(length(buckets[i]) - 1)  # fast way to get a random index from 1 to size of bucket
+                sid = buckets[i][idx]
+                s = humans[sid]
+                inf_will_happen = false
+                if s.inf == SUS
+                    inf_will_happen = rand() < beta
+                end
+                if s.inf == REC && s.p_inf ≠ xinf 
+                    inf_will_happen = rand() < 0.8*beta
+                end
+                if inf_will_happen
+                    s.swap = xinf
+                    incidence_cnt += 1
+                else
+                    wasted_contact += 1
+                end
+            end
+            
+            #sampled_contacts = buckets[i][rand(1:(length(buckets[i])), agc)]
+            #sampled_contacts = @view buckets[i][1:agc] # this is fast but not what I want
+            #sampled_contacts = sample(buckets[i], agc, replace=false)
+            #sampled_contacts = rand(buckets[i], agc)
+            # for sid in sampled_contacts 
+            #     s = humans[sid]
+            #     inf_will_happen = false
+            #     if s.inf == SUS
+            #         inf_will_happen = rand() < beta
+            #     end
+            #     if s.inf == REC && s.p_inf ≠ xinf 
+            #         inf_will_happen = rand() < 0.8*beta
+            #     end
+            #     if inf_will_happen
+            #         s.swap = xinf
+            #         incidence_cnt += 1
+            #     else
+            #         wasted_contact += 1
+            #     end
+            # end
+        end
+        #distr_contacts = round.(Int64, cmview .* num_contacts) # will give the number of contacts for each age group
+        #_sampled_contacts = sample.(buckets, distr_contacts, replace=false) # broadcast sample over 8 buckets and contacts for 8 age group
+        #sampled_contacts = Base.Iterators.flatten(_sampled_contacts)
+
+        # @info "Agent " x
+        # @info "Number of contacts: $num_contacts"
+        # @info "Distributed contacts: $distr_contacts"
+        # @info "Sampled contacts: $(println(sampled_contacts))"
+        # @info "Incidence count: $incidence_cnt"
+        # @info "Initial count of inf: $(length(inf_agents))"
+    end
+    return (incidence_cnt, wasted_contact)
 end
 
 # this is used in a column wise manner 
