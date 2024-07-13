@@ -1,6 +1,7 @@
 using StatsBase, Random
 using DelimitedFiles
 using Distributions
+using DelimitedFiles
 
 @enum INFTYPE UNDEF=0 SUS=1 CARC=2 CARW=3 CARY=4 IMD=5 REC=6
 
@@ -20,8 +21,6 @@ Base.show(io::IO, ::MIME"text/plain", z::Human) = dump(z)
 
 ## system parameters
 Base.@kwdef mutable struct ModelParameters
-    popsize::Int64 = 100000
-    numofsims::Int64 = 100
     maxtime::Int64 = 520 # in weeks 
     beta::Vector{Float64} = [0.5, 0.5, 0.5] # for Carriage 
     prob_of_imd::Float64 = 0.001
@@ -29,6 +28,7 @@ end
 # constant variables
 const humans = Array{Human}(undef, 0) 
 const p = ModelParameters()  ## setup default parameters
+const POPSIZE = 100000
 
 # distributions 
 const DISTR_CARRIAGE = Gamma(99.31, 0.131) # convert to weeks 
@@ -37,20 +37,20 @@ const DISTR_RECOVER = Poisson(244)
 include("helpers.jl")
 
 ### Main simulate function 
-function simulate() 
+function simulate(simid) 
+    # print simulation details 
+    @info "Running simid: $simid on processor ID: $(myid())"
+    
     #init_state()
     init_agents() # reset agents
     init_disease()
-    
-    # maximum model time
-    max_time = p.maxtime 
-    
+
     # data collection
-    res_carriage = zeros(Int64, 3, max_time) # 3 rows for C, W, Y since      
-    println("running simulation, time: $(max_time)")
-    for t in 1:max_time #p.maxtime
+    res_carriage = zeros(Int64, 3, p.maxtime) # 3 rows for C, W, Y since      
+    for t in 1:p.maxtime
         timestep()
         _c, _w, _y = collect_data()
+        #res_carriage[1:3, t] .= (_c, _w, _y)
         res_carriage[1:3, t] .= (_c, _w, _y)
     end
     return res_carriage
@@ -72,12 +72,12 @@ function init_state(ip::ModelParameters)
     # the p is a global const
     # the ip is an incoming different instance of parameters 
     # copy the values from ip to p. 
-    ip.popsize == 0 && error("no population size given")
+    # ip.popsize == 0 && error("no population size given")
     for x in propertynames(p)
         setfield!(p, x, getfield(ip, x))
     end
     # resize the human array to change population size
-    resize!(humans, p.popsize)
+    resize!(humans, POPSIZE)
 
     @debug "Initialization state complete..."
     return
@@ -93,12 +93,12 @@ function init_agents()
     sampled_ages = shuffle!(rand.(inverse_rle(agb, pop_distr))) # sample
     
     # error checks
-    @assert sum(pop_distr) == p.popsize
-    @assert length(sampled_ages) == p.popsize
+    @assert sum(pop_distr) == POPSIZE
+    @assert length(sampled_ages) == POPSIZE
 
     # if rounding issues, try this (from the rsv canada project) 
     # push!(sf_agegroups, fill(6, abs(p.popsize - length(sf_agegroups)))...) # if length(sf_agegroups) != p.popsize # because of rounding issues
-    for i in 1:p.popsize
+    for i in 1:POPSIZE
         humans[i] = Human()
         x = humans[i]
         x.idx = i
@@ -120,8 +120,6 @@ function init_disease()
     _sero_prop[2] = rand(Uniform(0.02, 0.05)) # SERO ּW    
     _sero_prop[3] = 1 - _sero_prop[1] - _sero_prop[2] # SERO Y
 
-    _beta = 0.001
-    p.beta = [_beta*_sero_prop[1], _beta*_sero_prop[2], _beta*_sero_prop[3]] # set the beta values for the disease
     sero_pop = Categorical(_sero_prop)
     @debug "...sero props $_sero_prop"
 
@@ -259,7 +257,7 @@ end
 function transmission() 
     incidence_cnt = 0 
     wasted_contact = 0 
-    inf_agents = humans[findall(x -> x.inf ∈ (CARC, CARY, CARY), humans)]
+    inf_agents = humans[findall(x -> x.inf ∈ (CARC, CARW, CARY), humans)]
     length(inf_agents) == 0 && return (incidence_cnt, wasted_contact) # no carriers to transmit
     buckets = [findall(x -> x.ag == i, humans) for i = 1:length(AG_BRAC)]
     shuffle!.(buckets)
