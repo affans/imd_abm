@@ -24,8 +24,26 @@ function get_disease_prop()
         res[x.ag, Int(x.inf)] += 1 
         res[x.ag, 7] += 1 # gets the total number of people in that age group
     end
+    # add 8th column
     res = hcat(res, vec(sum(res[:, 2:4], dims=2)))
     return res
+end
+
+function get_coverage_distribution() 
+    # find 11-12 age group
+    # find 11-15 age group 
+    cc0 = length(findall(x -> x.age ∈ 572:623, humans))
+    cc2 = length(findall(x -> x.age ∈ 832:883, humans))
+
+    first0 = length(findall(x -> x.age ∈ 572:623 && x.vac == 1, humans))
+    second0 = length(findall(x -> x.age ∈ 572:623 && x.vac == 2, humans)) # should always be zero
+
+    # first2 will have a decent amount of people, but not a lot of them will have 
+    # efficacy since it would've been expired... check with && x.eff > 0 condition
+    first2 = length(findall(x -> x.age ∈ 832:883 && x.vac == 1, humans)) 
+    second2 = length(findall(x -> x.age ∈ 832:883 && x.vac == 2, humans)) 
+
+    (first0/cc0, second0/cc0, first2/cc2, second2/cc2)
 end
 
 @inline convert_year_to_wkrange(x::Int64) = (x*52):(x*52)+51 # convert year to week range
