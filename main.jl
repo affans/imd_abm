@@ -16,7 +16,7 @@ if nprocs() == 1
     if gethostname() == "hpc" 
         @info "connecting to hpc"
         if cluster_env
-            addprocs(SlurmManager(450), N=15, verbose="", topology=:master_worker, exeflags="--project=$(Base.active_project())")
+            addprocs(SlurmManager(500), N=16, verbose="", topology=:master_worker, exeflags="--project=$(Base.active_project())")
         else 
             addprocs(10)
         end
@@ -32,28 +32,16 @@ else
 end
 
 
-# Launching sims 
-julia> process_sims(xy, "adjusted")
+function launch_sims(nsims, startyear, endyear, base=0.0011, adj1=0.65, adj2=0.49, adj3=0.73)
+    # new calibrated values=base=0.0011, adj1=0.65, adj2=0.49, adj3=0.73 
 
-#julia> xx = launch_sims()
-#julia> process_sims(xx, "basecase") # will save files in the output folder
-# 
-# change p.adj_vax_cov for scenario analysis 
-#julia> xy = launch_sims()
-#julia> process_sims(xy, "adjusted")
-
-function launch_sims(base=0.001, adj1=0.49, adj2=0.40, adj3=0.54)
-    launch_sims(400, 500, base, adj1, adj2, adj3)
-end
-
-function launch_sims(nsims, maxtime, base, adj1, adj2, adj3)
     @info "Current process id: $(myid())"
     @info "Total number of processors: $(nprocs())"
     @info "Number of simulations: $nsims"
 
     # create an object for model parameters
     mp = ModelParameters()
-    mp.sstime = maxtime
+    mp.sstime = 0
     mp.beta = [base*adj1, base*adj2, base*adj3] # set the beta values for the disease
     mp.adj_vax_cov = true # false for basecase
     println("Model parameters: $(mp)")
@@ -62,37 +50,19 @@ function launch_sims(nsims, maxtime, base, adj1, adj2, adj3)
     # each process has its own `p` modelparameters
     @everywhere init_state($mp) # initialize state/parameters over all processors
 
-    # to run steady state for long time
-    # cd = pmap(1:nsims) do x
-    #     @info "Starting simulation $x on host $(gethostname()), id: $(myid())"
-    #     init_agents(x, false) # true for reading calibrated data, false for new population
-    #     init_disease() # since we are reading calibrated data 
-    #     steadystate(x, true) # true argument to save the calibrated files         
-    # end
-
     cd = pmap(1:nsims) do x
         @info "Starting simulation $x on host $(gethostname()), id: $(myid())"
         init_agents(x, true) # true for reading calibrated data, false for new population
-        vaccine_loop(x)
+        #init_disease() # if not reading from calibrated files
+        run_model(x, startyear, endyear, false)
+        
     end
     @everywhere flush(stdout)
     println("simulations finished - returning data")
     return cd
 end
 
-function process_sims(res, fprefix="") 
-    # the resulting object has dimensions 
-    # sim x time x agegroup x carriage x vaccine 
-    # we want to split carriage/vaccine into it's own files 
-    # and each file will have (time _ sim) x agegroup (sims are stacked on top of each other)
-
-    # sim ident 
-    simident = "r1"
-
-    # get length/size inforamation
-    nsim = length(res) 
-    ntimeyrs, _, _, _ = size(res[1][2])  # since res[1][2] is the incidence matrix of the 1st simulation
-
+function process_carriage(res, writefile=false)
     ### PROCESSING PREVALANCE
     # Let's save prevalance 
     # each prevalence object (say res[i][1] where i is a simulation) 
@@ -118,8 +88,46 @@ function process_sims(res, fprefix="")
 
     # repackage as a matrix to save as csv 
     scr = hcat(carc_avg, carc_quant, carw_avg, carw_quant, cary_avg, cary_quant)
-    writedlm("./output/$(simident)_sim_avgprev_$(fprefix).csv", scr, ',')
+    writefile && writedlm("./output/$(simident)_sim_avgprev_$(fprefix).csv", scr, ',')
+    return scr
+end
+
+function plot_carriage(res) 
+    # needs the results from process_carriage() 
+    xvals = 1:size(res)[1]
+    carc = res[:, 1:3] 
+    carw = res[:, 4:6]
+    cary = res[:, 7:9]
     
+    println("last line: $(res[end, :])")
+
+    #Gnuplot.options.default = sid
+    @gp "reset"
+    @gp :-  "set style fill transparent solid 0.5"
+    #@gp :- "load '~/gpconfig.cfg'"
+    @gp :- xvals carc[:, 2] carc[:, 3] "with filledcu notitle lc rgb '#e41a1c'"
+    @gp :- xvals carw[:, 2] carw[:, 3] "with filledcu notitle lc rgb '#377eb8' "
+    @gp :- xvals cary[:, 2] cary[:, 3] "with filledcu notitle lc rgb '#4daf4a' "
+    
+    @gp :- xvals carc[:, 1] "with lines title 'C' lc  rgb '#e41a1c' lw 2"
+    @gp :- xvals carw[:, 1] "with lines title 'W' lc  rgb '#377eb8' lw 2"
+    @gp :- xvals cary[:, 1] "with lines title 'Y' lc rgb '#4daf4a' lw 2"
+    display(@gp)
+end
+
+function process_sims(res, fprefix="") 
+    # the resulting object has dimensions 
+    # sim x time x agegroup x carriage x vaccine 
+    # we want to split carriage/vaccine into it's own files 
+    # and each file will have (time _ sim) x agegroup (sims are stacked on top of each other)
+
+    # sim ident 
+    simident = "r1"
+
+    # get length/size inforamation
+    nsim = length(res) 
+    ntimeyrs, _, _, _ = size(res[1][2])  # since res[1][2] is the incidence matrix of the 1st simulation
+ 
     ### PROCESSING INCIDENCE
     # each incidence object (say res[i][2] where i is a simulation) 
     # is a tensor (4 dimensional): [time (in years), ag, carriage, vaccine]
@@ -147,53 +155,4 @@ function process_sims(res, fprefix="")
         end 
     end   
     return scr # return the prevalance data for easy plotting 
-end
-
-function plot(res) 
-    xvals = 1:size(res)[1]
-    carc = res[:, 1:3] 
-    carw = res[:, 4:6]
-    cary = res[:, 7:9]
-    
-    println("last line: $(res[end, :])")
-
-    #Gnuplot.options.default = sid
-    @gp "reset"
-    @gp :-  "set style fill transparent solid 0.5"
-    #@gp :- "load '~/gpconfig.cfg'"
-    @gp :- xvals carc[:, 2] carc[:, 3] "with filledcu notitle lc rgb '#e41a1c'"
-    @gp :- xvals carw[:, 2] carw[:, 3] "with filledcu notitle lc rgb '#377eb8' "
-    @gp :- xvals cary[:, 2] cary[:, 3] "with filledcu notitle lc rgb '#4daf4a' "
-    
-    @gp :- xvals carc[:, 1] "with lines title 'C' lc  rgb '#e41a1c' lw 2"
-    @gp :- xvals carw[:, 1] "with lines title 'W' lc  rgb '#377eb8' lw 2"
-    @gp :- xvals cary[:, 1] "with lines title 'Y' lc rgb '#4daf4a' lw 2"
-    display(@gp)
-end
-
-
-function searchspace() 
-    # this was a calibration effort to see the effect of beta 
-    # we want transmission so that the steady state is 
-    # the reported prevalence as reported in the Lancet paper
-    adj1 = [0.45, 0.46, 0.47, 0.48, 0.49, 0.50]
-    adj2 = [0.38, 0.39, 0.4]
-    adj3 = [0.5, 0.51, 0.52, 0.53, 0.54, 0.55]
-    
-    res = zeros(Float64, length(adj1)*length(adj2)*length(adj3), 7)
-    t = 1
-    for a1 in adj1
-        for a2 in adj2 
-            for a3 in adj3 
-                cc = launch_sims(400, 3000, 0.001, a1, a2, a3)
-                diffc = cc[end, 1] - cc[1, 1]
-                diffw = cc[end, 4] - cc[1, 4]
-                diffy = cc[end, 7] - cc[1, 7]
-                res[t, :] .= (a1, a2, a3, diffc, diffw, diffy, diffc+diffw+diffy)
-                t += 1
-            end 
-        end 
-    end
-    writedlm("calibration.dat", res, ',')
-    return res
 end

@@ -39,7 +39,7 @@ const p = ModelParameters()  ## setup default parameters
 const POPSIZE = 100000
 
 # distributions 
-const DISTR_CARRIAGE = Gamma(99.31, 0.131) # convert to weeks 
+const DISTR_CARRIAGE = Poisson(42) # From Feldman paper, 9.6 months ~ 42 weeks
 const DISTR_RECOVER = Poisson(244)
 const VAC_EFF = Beta(5.68, 2.1437)
 const VAC_DURATION = Poisson(244) # seyed to go check
@@ -47,89 +47,51 @@ const VAC_DURATION = Poisson(244) # seyed to go check
 includet("helpers.jl")
 
 ### Main simulation functions
-function steadystate(simid, save_sim=false) 
-    # This function runs the time loop without vaccine for variable (p.sstime) amount of time
-    # This function can be used to run a single "simulation" 
-    # Basically init_state(), steadystate(simid), and (optional), secondary_loop()
-
-    # STEADY STATE 
-    # I used the function to run 3000 weeks (p.sstime = 3000) to reach steady state in the population
-    # At the end of each simulation, the `humans` array object is saved as a JLD2 file 
-    # These files can be read again in simulations as initial conditions to avoid running the initial 3000 weeks. 
-    # The steady state files are stored in the cluster and not checked into repo 
-    # And so for reproducibility, one must run this function for 3000 weeks and save the files manually (and adjsut any paths needed)
+function run_model(simid, startyear, endyear, save_sim = false)
+    # main time loop function 
     @info "Running simulation ID: $simid"
     @info "Model parameters: $(p)"
     @info "Simulation data written on file: $(save_sim)"
-
-    # set seed to simulation id
-    Random.seed!(simid*556)
-
-    # Time Loop
-    ss_carriage = zeros(Int64, 6, p.sstime) # data 3 rows for C, W, Y since
-    for t in 1:p.sstime
-        timestep()
-        ss_carriage[:, t] .= collect_data()
-    end
-    
-    if save_sim
-        @info "saving simulation to jld2"
-        file = jldopen("/data/imd_abm_calibration/sim$(simid)n.jld2", "w") 
-        file["h"] = humans #save the humans object 
-        close(file)
-    end
-    return ss_carriage
-end
-
-function vaccine_loop(simid)
-    @info "Running simulation ID: $simid"
-    @info "Model parameters: $(p)"
     
     # set seed to simulation id
     Random.seed!(simid*556)
 
-    # start main loop from 2004 (2005 is when vaccine starts) 
-    # we want 52 weeks of no vaccine to keep steady state
-    # (the steady state is read from saved calibration files)
-    
-    _ytm = 2004:(2035 - 1) # to 2035: 30 + 1 years
-    ytm = repeat(_ytm, inner=52) # create an array with the years for easier indexing
-    totaltime = length(ytm) # in weeks for the actual time loop 
-    @info "Time loop: start: $(first(_ytm)), end: $(last(_ytm)) totaltime: $totaltime"
-
-    # vaccine dose coverage 
-    # 2004, 2005 - 2021 (+4 years to 2025 + 10 years of new vaccine)
-    fdc = zeros(Float64, length(_ytm))
-    ddc = zeros(Float64, length(_ytm))
-    # fixed vector for 2004 - 2025 (_ytm)
-    fdc[1:21] .= [0.0, 0.13, 0.19, 0.35, 0.45, 0.55, 0.62, 0.67, 0.69, 0.73, 0.74, 0.75, 0.77, 0.79, 0.80, 0.81, 0.83, 0.86, 0.9, 0.9, 0.9]
-    fdc[22:end] .= 0.9 
-    ddc[1:21] .= [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.06, 0.10, 0.14, 0.18, 0.23, 0.29, 0.33, 0.37, 0.41, 0.46, 0.49, 0.55, 0.61, 0.61, 0.61]
-    ddc[22:end] .= 0.61
-
-    if p.adj_vax_cov
-        fdc[22:end] .= 0.0
-        ddc[22:end] .= 0.61
-    end
-    @info "vaccine adjustment variable: $(p.adj_vax_cov)"
-    @info "setting fdc: $fdc"
+    tm_years = startyear:endyear 
+    ytm = repeat(tm_years, inner=52) # create an array with the years for indexing the year
+    totaltime = length(ytm) # in weeks for the time loop 
+    @info "tm_years: $(tm_years), total years: $(length(tm_years))" 
+    @info "expanded to array size: $totaltime (total years * 52)" 
+    @info "caution: there are no error checks on start/end date"
+    startyear ∈ 2005:2035 && @info "start year set between 2005-2035, vaccine will happen"
 
     # data collection -- allocate memory 
-    ss_inc = zeros(Int16, length(_ytm), length(AG_BRAC), 3, 2) # time x ag x 3carriage x 2vaccine
+    ss_inc = zeros(Int16, length(tm_years), length(AG_BRAC), 3, 2) # time(in years) x ag x 3carriage x 2vaccine
     ss_carriage = zeros(Int64, 6, totaltime) # data 3 rows for C, W, Y since
 
-    # main time loop
-    for t in 1:totaltime
+    @inbounds for t in 1:totaltime 
         currentyear = ytm[t]
-        if t % 52 == 0
-            cov1 = fdc[currentyear - 2003] # since fdc starts 2004
-            cov2 = ddc[currentyear - 2003]
-            init_vaccine(currentyear, cov1, cov2)
-        end
-        wv = timestep()
-        ss_inc[currentyear - 2003, :, :, :] += wv 
+        if t % 52 == 0 
+            cov1, cov2 = get_coverage(currentyear) 
+            init_vaccine(cov1, cov2)
+        end 
+        wv = timestep() 
+        ss_inc[currentyear - (startyear - 1), :, :, :] += wv 
         ss_carriage[:, t] .= collect_data()
     end
+
+    # STEADY STATE 
+    # I used the function to run 20000 weeks (with no vaccine) to reach steady state in the population
+    # At the end of each simulation, the `humans` array object is saved as a JLD2 file 
+    # These files can be read again in simulations as initial conditions to avoid running the initial 3000 weeks. 
+    # The steady state files are stored in the cluster and not checked into repo 
+    
+    # commenting this out since we don't want to be overwriting the calibration files 
+    # if save_sim
+    #     @info "saving simulation to jld2"
+    #     file = jldopen("/data/imd_abm_calibration/sim$(simid)n.jld2", "w") 
+    #     file["h"] = humans #save the humans object 
+    #     close(file)
+    # end
     return ss_carriage, ss_inc
 end
 
@@ -235,9 +197,37 @@ function init_disease()
     return
 end
 
-function init_vaccine(year, cov1, cov2)
+@inline function get_coverage(year) 
+    # helper function to get the vaccine coverage value for each year
+    # only works for years between 2005 and 2025 (+ fixed values for 2026 - 2035)
+    cov1 = 0.0 
+    cov2 = 0.0 
+    # create coverage values from 2005 to 2024 (fixed vector)
+    # --20 elements
+    fdc = [0.13, 0.19, 0.35, 0.45, 0.55, 0.62, 0.67, 0.69, 0.73, 0.74, 0.75, 0.77, 0.79, 0.80, 0.81, 0.83, 0.86, 0.9, 0.9, 0.9]
+    ddc = [0.0, 0.0, 0.0, 0.0, 0.0, 0.06, 0.10, 0.14, 0.18, 0.23, 0.29, 0.33, 0.37, 0.41, 0.46, 0.49, 0.55, 0.61, 0.61, 0.61]
+    if year ∈ 2005:2024
+        cov1 = fdc[year - 2004]
+        cov2 = ddc[year - 2004]
+    end 
+    if year > 2024 
+        # coverage remains fixed for beyond 2024
+        cov1 = 0.9 
+        cov2 = 0.61 
+        if p.adj_vax_cov
+            # we are in scenario analysis, 
+            cov1 = 0.0 
+            cov2 = 0.61 # could also test at 90%
+        end
+    end 
+    return cov1, cov2
+end
+
+function init_vaccine(cov1, cov2)
     # implementing vaccine every year starting in 2005
     # cov1, cov2 are coverage values for first dose and second dose
+
+    cov1 + cov2 == 0 && return
 
     # find everyone 11 years of age 
     cc1 = shuffle!(findall(x -> x.age ∈ (572:623), humans))
@@ -377,7 +367,7 @@ end
 @inline function move_to_carriage(x::Human) 
     x.inf = x.swap # so will be CARC, CARY, CARW
     x.c_inf += 1 # raise infection cnt
-    x.st = round(Int16, 4*rand(DISTR_CARRIAGE)) 
+    x.st = round(Int16, rand(DISTR_CARRIAGE))     
 end
 
 @inline function move_to_imd(x::Human) 
@@ -463,7 +453,7 @@ function transmission()
                 if s.inf == SUS
                     inf_will_happen = rand() < beta * (1 - s.eff)
                 end
-                if s.inf == REC && s.p_inf ≠ xinf 
+                if s.inf == REC && s.p_inf ≠ xinf
                     inf_will_happen = rand() < 0.8*beta*(1 - s.eff)
                 end
                 if inf_will_happen
