@@ -32,6 +32,7 @@ Base.@kwdef mutable struct ModelParameters
     beta::Vector{Float64} = [0.5, 0.5, 0.5] # for Carriage 
     prob_of_imd::Float64 = 0.0
     adj_vax_cov::Bool = false # flip to true for scenario analysis
+    cap_value::Int16 = 99  # maximum number of infections
 end
 # constant variables
 const humans = Array{Human}(undef, 0) 
@@ -141,6 +142,9 @@ function init_agents(simid, read_sims=false)
         @info "Reading calibrated model files"
         h = read_jld_calibration(simid)
         humans .= h
+        for x in humans 
+            x.c_inf = 0
+        end
         return 
     end
     @info "Initialzing new zero population"
@@ -212,7 +216,7 @@ end
     end 
     if year > 2024 
         # coverage remains fixed for beyond 2024
-        cov1 = 0.9 
+        cov1 = 0.9
         cov2 = 0.61 
         if p.adj_vax_cov
             # we are in scenario analysis, 
@@ -450,10 +454,10 @@ function transmission()
                 sid = buckets[i][idx]
                 s = humans[sid]
                 inf_will_happen = false
-                if s.inf == SUS
+                if s.inf == SUS && s.c_inf < p.cap_value
                     inf_will_happen = rand() < beta * (1 - s.eff)
                 end
-                if s.inf == REC && s.p_inf ≠ xinf
+                if s.inf == REC && s.p_inf ≠ xinf && s.c_inf < p.cap_value
                     inf_will_happen = rand() < 0.8*beta*(1 - s.eff)
                 end
                 if inf_will_happen

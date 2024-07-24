@@ -32,9 +32,11 @@ else
 end
 
 
-function launch_sims(nsims, startyear, endyear, base=0.0011, adj1=0.65, adj2=0.49, adj3=0.73)
+function launch_sims(nsims, startyear, endyear, base=0.00105, adj1=0.67, adj2=0.60, adj3=0.76)
     # new calibrated values=base=0.0011, adj1=0.65, adj2=0.49, adj3=0.73 
-
+    # beta values (after calibration, but fitting to imd data 1997 to 2004)
+    # beta values = (0.00105, 0.67, 0.60, 0.76)
+    # note: this is with a cap of 2 (plus initial reset of cap at simulation start)
     @info "Current process id: $(myid())"
     @info "Total number of processors: $(nprocs())"
     @info "Number of simulations: $nsims"
@@ -44,6 +46,7 @@ function launch_sims(nsims, startyear, endyear, base=0.0011, adj1=0.65, adj2=0.4
     mp.sstime = 0
     mp.beta = [base*adj1, base*adj2, base*adj3] # set the beta values for the disease
     mp.adj_vax_cov = true # false for basecase
+    mp.cap_value = 2 # set to large value for calibration purposes 
     println("Model parameters: $(mp)")
 
     # transfer/initialze the parameters over all the workers 
@@ -55,7 +58,6 @@ function launch_sims(nsims, startyear, endyear, base=0.0011, adj1=0.65, adj2=0.4
         init_agents(x, true) # true for reading calibrated data, false for new population
         #init_disease() # if not reading from calibrated files
         run_model(x, startyear, endyear, false)
-        
     end
     @everywhere flush(stdout)
     println("simulations finished - returning data")
@@ -116,6 +118,8 @@ function plot_carriage(res)
 end
 
 function process_sims(res, fprefix="") 
+    # function to write the 4 dimensional incidence object to file for further analysis 
+
     # the resulting object has dimensions 
     # sim x time x agegroup x carriage x vaccine 
     # we want to split carriage/vaccine into it's own files 
@@ -155,4 +159,95 @@ function process_sims(res, fprefix="")
         end 
     end   
     return scr # return the prevalance data for easy plotting 
+end
+
+function fit_imd(res, sc=0.7, sw=1.35, sy=0.55) 
+    # res is the object returned from launch_sims() 
+    # i.e. it's a vector of simulation results 
+    # each result it self it a tuple(2) 
+    # where x[1] is the carriage object 
+    # and x[2] is the incidence object
+    # In this function we convert simulation carriage, and calculate probability of IMD 
+    # based on 1997 (or some year between 1997 and 2004)
+
+    # calibrate the beta value so it fits to IMD cases from 1997 to 2004
+    USPOP = 271394417 # 1997
+    USUNIT = USPOP / 100000
+    IMDTOTALS = [881, 21, 1110]
+    IMDTOTALS_2004 = [203, 24, 253]
+    IMDTOTALS_2000 = [442, 83, 699]
+    
+    # each incidence object (say res[i][2] where i is a simulation) 
+    # is a tensor (4 dimensional): [time (in years), ag, carriage, vaccine]
+
+    # for each simulation (of those who are not vaccineted -- though there should be zero people who are vaccinated)
+    # get the total number of carraige in 2007 per serogroup, over all age groups 
+    # convert it to total US population 
+    # divide with the IMD to get IMD probability 
+
+    # x[2] is the incidence object of each simulation (for each x simulation in res )
+    # first, dims=4 adds the incidence from vaccinated/not vaccinated groups (but from 1997 to 2004, there is no one in the not-vaccinated group)
+    # then we want to add accross age groups, which is dims=2, of the previous object
+    # the reduction brings it to 8×500×3×1 Array{Int64, 4}:
+    inc_peryear_perinf = reduce(hcat, [sum(sum(x[2], dims=4), dims=2) for x in res])
+    inc_peryear_perinf = dropdims(inc_peryear_perinf, dims=4) # drop the "vax/novax dimension"
+    
+    # get the number of years in the simulation -- use the incidence object 
+    LOY, _, _ = size(inc_peryear_perinf) # time x simulations x inftype 
+
+    # the index [1, :, :, :] gets only the first row (i.e. 1997) of every simulation
+    # take the mean of all the simulations
+    # and convert to US population 
+    firstyear = vec(mean(inc_peryear_perinf[1, :, :], dims=1) .* USUNIT)
+    
+    # divide by IMD (be careful to transpose it so column 1 is divided by the first element of IMD, etc )
+    prob =  [sc, sw, sy] .* IMDTOTALS ./ firstyear
+    println("prob: $prob")
+
+    # Now go through each simulation and get the average 
+    # number of carriage per year (average over simulations)
+    # so we can flip a coin to see how many of them developed IMD 
+    _yearly_avg = mean(inc_peryear_perinf, dims=2) # mean over the second dim will keep the carriage dimension open
+    yearly_avg = round.(Int64, reshape(_yearly_avg, (LOY, 3)) .* USUNIT) # 8 years x 3 inf types 
+
+    # for each column, flip that many coins to see how many IMD 
+    c_flips = map(x -> sum(rand(x) .< prob[1]), yearly_avg[:, 1])
+    w_flips = map(x -> sum(rand(x) .< prob[2]), yearly_avg[:, 2])
+    y_flips = map(x -> sum(rand(x) .< prob[3]), yearly_avg[:, 3])
+    imd_over_year = hcat(c_flips, w_flips, y_flips)
+    return imd_over_year
+end
+
+function plot_imd(imd_obj)
+    imd_data = [881	685	564	442	545	396	411	203 217 240 236 212 128 157 138 106 105 76 57 99 86 90 85 54 73 107;
+    21 58 9 83 27 55 37 24 14 28 21 47 53 42 56 45 56 49 38 34 25 17 40 15 7 12;
+    1110 810 641 699 621 391 372 253 250 251 247 292 252 231 205 124 109 70 46 52 30 48 68 50 28 59;
+    ]
+
+    println("size data: $(size(imd_data)), size sims: $(size(imd_obj))")
+    println("sum data: $(sum(imd_data, dims=2))")
+    println("sum sims: $(sum(imd_obj, dims=1))")
+
+    # imd_obj will be three columns for each inf type, and time for rows
+    # @gp "reset" 
+    # @gp :- imd_obj[:, 1] "with lines title 'IMD C' lc 'red'"
+    # @gp :- imd_obj[:, 2] "with lines title 'IMD W' lc 'green'"
+    # @gp :- imd_obj[:, 3] "with lines title 'IMD Y' lc 'blue'"
+
+    # @gp :- imd_data[1, :] "with points title 'Data C' pt 7 lc 'red'"
+    # @gp :- imd_data[2, :] "with points title 'Data W' pt 7 lc 'green'"
+    # @gp :- imd_data[3, :] "with points title 'Data Y' pt 7 lc 'blue'"
+    # display(@gp)
+
+    
+    total_imd_sims = vec(sum(imd_obj, dims=2))
+    # total_imd_data = vec(sum(imd_data, dims=1))
+    # println("total imd data: $(sum(total_imd_data))")
+    # println("total imd sims: $(sum(total_imd_sims))")
+    # lse = sum(abs.(total_imd_data .- total_imd_sims))
+    # println("sum of diff: $lse")
+    @gp "reset" 
+    #@gp :- total_imd_data "with points pt 7 lc 'red'"
+    @gp :- total_imd_sims "with lines lw 2 lc 'red'"
+    display(@gp)
 end
