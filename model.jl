@@ -28,10 +28,10 @@ Base.show(io::IO, ::MIME"text/plain", z::Human) = dump(z)
 
 ## system parameters
 Base.@kwdef mutable struct ModelParameters
-    sstime::Int64 = 520 # in weeks 
     beta::Vector{Float64} = [0.5, 0.5, 0.5] # for Carriage 
     prob_of_imd::Float64 = 0.0
     adj_vax_cov::Bool = false # flip to true for scenario analysis
+    adj_vax_val::Float64 = 0.61 # coverage for the second dose (or the first dose if 11 year olds are not getting vaccinated)
     cap_value::Int16 = 99  # maximum number of infections
 end
 # constant variables
@@ -203,13 +203,16 @@ end
 
 @inline function get_coverage(year) 
     # helper function to get the vaccine coverage value for each year
-    # only works for years between 2005 and 2025 (+ fixed values for 2026 - 2035)
+    # only works for years between 2005 and 2025 (+ fixed values for 2026 - 2035) 
+    # as this is hard coded
     cov1 = 0.0 
     cov2 = 0.0 
-    # create coverage values from 2005 to 2024 (fixed vector)
-    # --20 elements
+    
+    # create coverage values from 2005 to 2024 (fixed vector of 20 elements)
     fdc = [0.13, 0.19, 0.35, 0.45, 0.55, 0.62, 0.67, 0.69, 0.73, 0.74, 0.75, 0.77, 0.79, 0.80, 0.81, 0.83, 0.86, 0.9, 0.9, 0.9]
     ddc = [0.0, 0.0, 0.0, 0.0, 0.0, 0.06, 0.10, 0.14, 0.18, 0.23, 0.29, 0.33, 0.37, 0.41, 0.46, 0.49, 0.55, 0.61, 0.61, 0.61]
+    @assert length(fdc) == length(ddc) == 20 
+
     if year ∈ 2005:2024
         cov1 = fdc[year - 2004]
         cov2 = ddc[year - 2004]
@@ -219,9 +222,10 @@ end
         cov1 = 0.9
         cov2 = 0.61 
         if p.adj_vax_cov
-            # we are in scenario analysis, 
+            # we are in "adjusted" scenario analysis, 
             cov1 = 0.0 
-            cov2 = 0.61 # could also test at 90%
+            #cov2 = 0.61 # could also test at 90%
+            cov2 = p.adj_vax_val
         end
     end 
     return cov1, cov2
@@ -242,20 +246,23 @@ function init_vaccine(cov1, cov2)
         vaccinate(x)
     end
 
-    # for second dose, find everyone 16 years of age 
-    cc2 = shuffle!(findall(x -> x.age ∈ (832:883), humans))
+    # for second dose, find *everyone* 16 years of age and then multiply by coverage value
+    # for other scenario: also do for 15 (832:883) and 17 (884:935) years of age
+    cov2_agegroup = (832:883)
+    cc2 = shuffle!(findall(x -> x.age ∈ cov2_agegroup, humans))
     tv2 = round(Int64, cov2 * length(cc2)) # total number of agents vaccinated
 
-    # # to maintain coverage, select agents who are eligble for second dose
-    cc2_vax = shuffle!(findall(x -> x.age ∈ (832:883) && x.vac > 0, humans))
+    # find agents who are eligble for second dose (i.e. got their first dose)
+    # these would be the first agents to get the second dose -- and then select the rest from cc2
+    cc2_vax = shuffle!(findall(x -> x.age ∈ cov2_agegroup && x.vac > 0, humans))
 
     # In scenario analysis, we want evaluate different vaccine scenarios 
     # by changing coverage values of fdc/ddc. The scenario is what happens if the 
     # first dose is not given at 11 years (i.e. set fdc coverage=0.0) and the first dose 
     # is shifted to the 16 year age group (i.e., coverage in ddc). 
-    # In the base case scenario, the coverage (say 60%) should really 
-    # only be from agents who had their first dose. In other words 
-    # length(cc2_vax) > tv2 (so we can select tv2 people from cc2_vax array)
+    # In the base case scenario (where vaccine IS given to 11 year olds), 
+    # the coverage (say 60%) should really only be from agents who had their first dose. 
+    # In other words length(cc2_vax) > tv2 (so we can select tv2 people from cc2_vax array)
     # In scenario analysis, first dose of 11 year is stopped so at some point 
     # length(cc2_vax) becomes small and we can not select tv2 people. In this case, 
     # we will priority whoever is in cc2_vax and then select from the overall age group 
