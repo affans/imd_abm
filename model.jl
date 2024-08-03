@@ -29,10 +29,12 @@ Base.show(io::IO, ::MIME"text/plain", z::Human) = dump(z)
 ## system parameters
 Base.@kwdef mutable struct ModelParameters
     beta::Vector{Float64} = [0.5, 0.5, 0.5] # for Carriage 
-    prob_of_imd::Float64 = 0.0
-    adj_vax_cov::Bool = false # flip to true for scenario analysis
-    adj_vax_val::Float64 = 0.61 # coverage for the second dose (or the first dose if 11 year olds are not getting vaccinated)
-    cap_value::Int16 = 99  # maximum number of infections
+    prob_of_imd::Float64 = 0.0  # NOT USED
+    adj_vax_opt::String = "r1"  # r1 (Option 1 - only one dose, older age group), r2 (Option 2 - first dose shifted to 15 year olds)
+    adj_vax_cov::Float64 = 0.61 # vaccine coverage for cov2 
+    adj_vax_age::Int64 = 16     # age group for cov2 
+    cov1_age::Int64 = 11        # age for cov1 
+    cap_value::Int16 = 99       # maximum number of infections
 end
 # constant variables
 const humans = Array{Human}(undef, 0) 
@@ -51,8 +53,8 @@ includet("helpers.jl")
 function run_model(simid, startyear, endyear, save_sim = false)
     # main time loop function 
     @info "Running simulation ID: $simid"
-    @info "Model parameters: $(p)"
-    @info "Simulation data written on file: $(save_sim)"
+    @info "Model parameters" dump(p)
+    @info "Saving simulation data? $(save_sim)"
     
     # set seed to simulation id
     Random.seed!(simid*556)
@@ -60,10 +62,8 @@ function run_model(simid, startyear, endyear, save_sim = false)
     tm_years = startyear:endyear 
     ytm = repeat(tm_years, inner=52) # create an array with the years for indexing the year
     totaltime = length(ytm) # in weeks for the time loop 
-    @info "tm_years: $(tm_years), total years: $(length(tm_years))" 
-    @info "expanded to array size: $totaltime (total years * 52)" 
-    @info "caution: there are no error checks on start/end date"
-    startyear ∈ 2005:2035 && @info "start year set between 2005-2035, vaccine will happen"
+    @info "Year Range: $(tm_years), Run time (in years:) $(length(tm_years)), (in weeks:) $totaltime" 
+    startyear ∈ 2005:2035 && @info "Start year set between 2005-2035, vaccine code will run"
 
     # data collection -- allocate memory 
     ss_inc = zeros(Int16, length(tm_years), length(AG_BRAC), 3, 2) # time(in years) x ag x 3carriage x 2vaccine
@@ -202,9 +202,8 @@ function init_disease()
 end
 
 @inline function get_coverage(year) 
-    # helper function to get the vaccine coverage value for each year
-    # only works for years between 2005 and 2025 (+ fixed values for 2026 - 2035) 
-    # as this is hard coded
+    # helper function to get the vaccine coverage value for a particular year
+    # only works for years between 2005 and 2025 (+ fixed values for 2026 - 2035), otherwise returns 0
     cov1 = 0.0 
     cov2 = 0.0 
     
@@ -213,65 +212,88 @@ end
     ddc = [0.0, 0.0, 0.0, 0.0, 0.0, 0.06, 0.10, 0.14, 0.18, 0.23, 0.29, 0.33, 0.37, 0.41, 0.46, 0.49, 0.55, 0.61, 0.61, 0.61]
     @assert length(fdc) == length(ddc) == 20 
 
+    # calculate coverage values for each year past 2024
     if year ∈ 2005:2024
         cov1 = fdc[year - 2004]
         cov2 = ddc[year - 2004]
     end 
     if year > 2024 
-        # coverage remains fixed for beyond 2024
+        # baseline coverage remains fixed for beyond 2024 
         cov1 = 0.9
         cov2 = 0.61 
-        if p.adj_vax_cov
-            # we are in "adjusted" scenario analysis, 
+
+        # any adjustments needed due to vaccine scenarios        
+        # R1 -- first dose is shifted to older age (adjusted by adj_vax_age) 
+        # Do this by setting cov1 = 0.0 so anyone selected under cov2 gets first dose
+        if p.adj_vax_opt == "r1"     
             cov1 = 0.0 
-            #cov2 = 0.61 # could also test at 90%
-            cov2 = p.adj_vax_val
+            cov2 = p.adj_vax_cov
         end
-    end 
+
+        # R2 -- first dose is shifted to 15 year olds (only for 2029+, see logic by Seyed)
+        # Do this by setting cov1 = 0.0 (but making sure cov2 only selects those who got first dose)
+        # Then in 2029+, set cov1 value
+        if p.adj_vax_opt == "r2"    
+            @info "... getting coverage for R2" 
+            if year ∈ 2025:2028
+                cov1 = 0.0
+                cov2 = p.adj_vax_cov
+            else 
+                cov1 = 0.90 
+                cov2 = p.adj_vax_cov
+            end
+        end
+    end
+    @info "final cov values scen: $(p.adj_vax_opt) year $year cov1 $cov1 cov2 $cov2"
     return cov1, cov2
 end
 
 function init_vaccine(cov1, cov2)
     # implementing vaccine every year starting in 2005
     # cov1, cov2 are coverage values for first dose and second dose
-
     cov1 + cov2 == 0 && return
 
-    # find everyone 11 years of age 
-    cc1 = shuffle!(findall(x -> x.age ∈ (572:623), humans))
+    # find everyone 11 years of age (or if r2, change the age to 15) 
+    # if r1, cov1 == 0 (past 2025) anyways so age doesn't matter -- this is NOT error checked
+    cov1_agegroup = (572:623) ## baseline 11 years of age
+    if p.adj_vax_opt == "r2" 
+        cov1_agegroup = convert_year_to_wkrange(15)
+    end 
+    # (cov1 > 0 && p.adj_vax_opt == "r1") && error("R1 vaccine should have cov1=0")
+    cc1 = shuffle!(findall(x -> x.age ∈ cov1_agegroup, humans))
     tv1 = round(Int64, cov1 * length(cc1)) # get total that will get vaccinated
     e1 = @view cc1[1:tv1] # view their indices
-    for idx in e1  # vaccinate them 
+    for idx in e1  # vaccinate them
         x = humans[idx]
         vaccinate(x)
     end
 
-    # for second dose, find *everyone* 16 years of age and then multiply by coverage value
-    # for other scenario: also do for 15 (832:883) and 17 (884:935) years of age
-    cov2_agegroup = (832:883)
+    # for cov2 (could be first or second dose), 
+    # find *everyone* 16 (or 15, 17) years of age and then multiply by coverage value
+    cov2_agegroup = convert_year_to_wkrange(16) # baseline scenario
+    if p.adj_vax_opt ∈ ("r1", "r2")
+        cov2_agegroup = convert_year_to_wkrange(p.adj_vax_age)    
+    end
+    # get everyone in this age group to maintain coverage
     cc2 = shuffle!(findall(x -> x.age ∈ cov2_agegroup, humans))
-    tv2 = round(Int64, cov2 * length(cc2)) # total number of agents vaccinated
+    tv2 = round(Int64, cov2 * length(cc2)) # total number of agents vaccinated    
 
     # find agents who are eligble for second dose (i.e. got their first dose)
     # these would be the first agents to get the second dose -- and then select the rest from cc2
     cc2_vax = shuffle!(findall(x -> x.age ∈ cov2_agegroup && x.vac > 0, humans))
 
-    # In scenario analysis, we want evaluate different vaccine scenarios 
-    # by changing coverage values of fdc/ddc. The scenario is what happens if the 
-    # first dose is not given at 11 years (i.e. set fdc coverage=0.0) and the first dose 
-    # is shifted to the 16 year age group (i.e., coverage in ddc). 
-    # In the base case scenario (where vaccine IS given to 11 year olds), 
-    # the coverage (say 60%) should really only be from agents who had their first dose. 
-    # In other words length(cc2_vax) > tv2 (so we can select tv2 people from cc2_vax array)
-    # In scenario analysis, first dose of 11 year is stopped so at some point 
-    # length(cc2_vax) becomes small and we can not select tv2 people. In this case, 
-    # we will priority whoever is in cc2_vax and then select from the overall age group 
-
-    # The code to do basecase and scenario analysis is the same 
-    # in this case, cc2_vax should have enough people at the start so that 
-    # when we do _elig[1:tv2] we only select agents from cc2_vax 
-    # but I threw an assert jsut to be sure for the basecase
-    !(p.adj_vax_cov) && @assert length(cc2_vax) >= tv2 
+    # this is an error check
+    # in baseline and r2 scenarios, we want cov2 to be only for second dose 
+    # so make sure the length of cc2_vax is greater than tv2
+    # for r1, cc2_vax is likely going to become zero as we stopped first dose (so folks under cov2 get their first dose eventually)
+    if p.adj_vax_opt ∈ ("baseline", "r2")
+        if length(cc2_vax) < tv2
+            @info "Not enough agents in cc2_vax to vaccinate for second dose"
+            @info "total needed to vaccinate: $tv2, total with one dose $(length(cc2_vax))"
+            error("Not enough agents in cc2_vax to vaccinate for second dose")
+        end
+    end
+    # select the agents for cov2 -- prioritize those needing second dose
     _elig = append!(copy(cc2_vax), setdiff(cc2, cc2_vax)) # faster than splatting
     #_elig = [cc2_vax..., setdiff(cc2, cc2_vax)...] # too many allocations
     

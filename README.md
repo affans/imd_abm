@@ -62,6 +62,34 @@ end
 
 ### Calibration 
 
+### Scenario Analysis
+#### Option 1 (R1) 
+In `main.jl`, we set up scenarios in the main function. The **baseline** scenario is always fixed to `cov1=90%`, `cov2=60%` where `cov1` is the coverage of 11 year olds and `cov2` is the coverage for 16 year olds getting their second dose. 
+
+In Option 1 `p.adj_vax_opt = "r1"`, then `cov1 = 0` after 2025. The variable `cov2` (adjusted by `adj_vax_cov`) then signifies the coverage of individuals (of age `adj_vax_age`) getting vaccinated. This coverage will prioritize those getting their second dose, but eventually will start giving the age group their first dose since `cov1 = 0`. The value of `cov2` is set by . 
+
+See table for summary
+
+```
++=============+===========+==========+========+==+
+| Baseline Scenario       |          |        |  |
++=============+===========+==========+========+==+
+|             | cov1=90%  | cov2=61% | age=16 |  |
++-------------+-----------+----------+--------+--+
+| Adjusted Scenarios      |          |        |  |
++-------------+-----------+----------+--------+--+
+| age  / cov2 | 15        | 16       | 17     |  |
++-------------+-----------+----------+--------+--+
+| 61%         | ?         | ?        | ?      |  |
++-------------+-----------+----------+--------+--+
+| 90%         | ?         | ?        | ?      |  |
++-------------+-----------+----------+--------+--+
+note: adjusted scenario means `cov1 = 0`
+```
+
+
+
+
 ### Details, Assumptions, and Notes
 `age_dynamics`: the function that simulates the age dynamics of the population, i.e. aging, births, and deaths in the population. There are two main dynamics: 
 1. Suppose, in a time step, there are 50 agents to transition from <1 to 1-4. In this case, we need to find 50 agents to 'kill' in the population to maintain the population size. Note, also there is natural death for individuals past 100 years of age (and suppose there are 5 of them). Therefore, we will find 45 random ones (randomly selected) + the 5 from natural death and convert their IDs to newborns. 
@@ -74,3 +102,14 @@ end
 `transmission()` simulates transmission of disease using contact matrices 
 
 `init_vaccine()` run yearly and distribute vaccines. 
+
+In scenario analysis, we want evaluate different vaccine scenarios 
+by changing coverage values of fdc/ddc. The scenario is what happens if the 
+first dose is not given at 11 years (i.e. set fdc coverage=0.0) and the first dose 
+is shifted to the 16 year age group (i.e., coverage in ddc). 
+In the base case scenario (where vaccine IS given to 11 year olds), 
+the coverage (say 60%) should really only be from agents who had their first dose. 
+In other words length(cc2_vax) > tv2 (so we can select tv2 people from cc2_vax array)
+In scenario analysis, first dose of 11 year is stopped so at some point 
+length(cc2_vax) becomes small and we can not select tv2 people. In this case, 
+we will priority whoever is in cc2_vax and then select from the overall age group 

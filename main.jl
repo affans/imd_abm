@@ -31,27 +31,30 @@ else
     @info "processors already added"
 end
 
-function launch_sims(nsims, startyear, endyear, adj_vac_cov, base=0.00105, adj1=0.67, adj2=0.60, adj3=0.76)
-    # new calibrated values=base=0.0011, adj1=0.65, adj2=0.49, adj3=0.73 
-    # beta values (after calibration, but fitting to imd data 1997 to 2004)
-    # beta values = (0.00105, 0.67, 0.60, 0.76)
+function launch_sims(nsims, startyear, endyear, adj_vac_opt, adj_vac_cov, adj_vac_age, base=0.00105, adj1=0.67, adj2=0.60, adj3=0.76)
+    # calibration to steady state=base=0.0011, adj1=0.65, adj2=0.49, adj3=0.73 
+    # calibration to IMD (following steady state): (0.00105, 0.67, 0.60, 0.76)
     # note: this is with a cap of 2 (plus initial reset of cap at simulation start)
     @info "Current process id: $(myid())"
     @info "Total number of processors: $(nprocs())"
     @info "Number of simulations: $nsims"
 
     # create an object for model parameters
+    # if adj_vac_opt == "baseline" then adj_vac_cov, adj_vac_age are not relevant 
+    # as they are not used in the `init_vaccine` function for baseline scenario
     mp = ModelParameters()
     mp.beta = [base*adj1, base*adj2, base*adj3] # set the beta values for the disease
-    mp.adj_vax_cov = adj_vac_cov # false for basecase
-    mp.adj_vax_val = 0.61 # or 0.90 -- irrelevant if adj_vac_cov = false
+    mp.adj_vax_opt = adj_vac_opt # vaccine option: baseline, r1, r2
+    mp.adj_vax_cov = adj_vac_cov # coverage for cov2 
+    mp.adj_vax_age = adj_vac_age # age for cov2
     mp.cap_value = 2 # set to large value for calibration purposes 
-    println("Model parameters: $(mp)")
+    @info "Model parameters: $(mp)"
 
     # transfer/initialze the parameters over all the workers 
     # each process has its own `p` modelparameters
     @everywhere init_state($mp) # initialize state/parameters over all processors
 
+    @info "Starting Simulations -- redirecting to logfile"
     cd = pmap(1:nsims) do x
         @info "Starting simulation $x on host $(gethostname()), id: $(myid())"
         init_agents(x, true) # true for reading calibrated data, false for new population
@@ -59,11 +62,22 @@ function launch_sims(nsims, startyear, endyear, adj_vac_cov, base=0.00105, adj1=
         run_model(x, startyear, endyear, false)
     end
     @everywhere flush(stdout)
-    println("simulations finished - returning data")
+    
+    # comment this out if you don't want the simulations written to file
+    strcov2 = string(round(Int, adj_vac_cov*100))
+    if adj_vac_opt == "baseline"
+        strsuffix = "baseline"
+    else 
+        strsuffix = "age$(adj_vac_age)_cov$(strcov2)_$(adj_vac_opt)"
+    end
+    process_carriage(cd, writefile=true, fsuffix=strsuffix) 
+    process_sims(cd, writefile=true, fsuffix=strsuffix)
+    fit_imd(cd, writefile=true, fsuffix=strsuffix)
+    println("simulations finished - saving / returning data")
     return cd
 end
 
-function process_carriage(res; writefile=false, fprefix="r1", fsuffix="baseline")
+function process_carriage(res; writefile=false, fprefix="aa", fsuffix="baseline")
     ### PROCESSING PREVALANCE
     # Let's save prevalance 
     # each prevalence object (say res[i][1] where i is a simulation) 
@@ -116,7 +130,7 @@ function plot_carriage(res)
     display(@gp)
 end
 
-function process_sims(res; writefile=false, fprefix="r1", fsuffix="baseline")
+function process_sims(res; writefile=false, fprefix="aa", fsuffix="baseline")
     # function to write the 4 dimensional incidence object to file for further analysis 
 
     # the resulting object has dimensions 
@@ -148,7 +162,7 @@ function process_sims(res; writefile=false, fprefix="r1", fsuffix="baseline")
     _v = [1, 2]  # vaccine 1 = incidence vaccine, 2 = incidence no vaccine
     for c in _c 
         for v in _v 
-        fname = "./output/incidence_$(fprefix)_sim$(nsim)_time$(ntimeyrs)_car$(c)_vac$(v)_$(fsuffix).csv"
+        fname = "./output/incidence_$(fprefix)_car$(c)_vac$(v)_$(fsuffix).csv"
         # s is each simulation object which has two entries: [1]: prevalence,  [2]: incidence
         # for each incidence object s[2], 
         # it's a 4 dimensional object 
@@ -160,7 +174,7 @@ function process_sims(res; writefile=false, fprefix="r1", fsuffix="baseline")
     return
 end
 
-function fit_imd(res, sc=0.7, sw=1.35, sy=0.55; writefile=false, fprefix="r1", fsuffix="baseline")
+function fit_imd(res, sc=0.7, sw=1.35, sy=0.55; writefile=false, fprefix="aa", fsuffix="baseline")
     # res is the object returned from launch_sims() 
     # i.e. it's a vector of simulation results 
     # each result it self it a tuple(2) 
@@ -229,7 +243,7 @@ function fit_imd(res, sc=0.7, sw=1.35, sy=0.55; writefile=false, fprefix="r1", f
     if writefile 
         for c in [1, 2, 3]  # carriage 1 2 3 
             for v in [1, 2] # vaccine 1 = incidence vaccine, 2 = incidence no vaccine
-                fname = "./output/imd_$(fprefix)_sim$(nsim)_time$(ntimeyrs)_car$(c)_vac$(v)_$(fsuffix).csv"
+                fname = "./output/imd_$(fprefix)_car$(c)_vac$(v)_$(fsuffix).csv"
                 inc_extract = reduce(vcat, [s[:, :, c, v] for s in all_sim_imd])
                 writedlm(fname, inc_extract, ',')
             end 
@@ -240,63 +254,6 @@ function fit_imd(res, sc=0.7, sw=1.35, sy=0.55; writefile=false, fprefix="r1", f
     # dropdims(mean(dropdims(reduce(hcat, [sum(sum(z, dims=4), dims=2) for z in all_sim_imd]), dims=4), dims=2), dims=2) .* 271394417 / 100000
     return all_sim_imd
     #return round.(Int64, all_sim_imd)
-end
-
-function fit_imd_old(res, sc=0.7, sw=1.35, sy=0.55) 
-    # res is the object returned from launch_sims() 
-    # i.e. it's a vector of simulation results 
-    # each result it self it a tuple(2) 
-    # where x[1] is the carriage object 
-    # and x[2] is the incidence object
-    # In this function we convert simulation carriage, and calculate probability of IMD 
-    # based on 1997 (or some year between 1997 and 2004)
-
-    # calibrate the beta value so it fits to IMD cases from 1997 to 2004
-    USPOP = 271394417 # 1997
-    USUNIT = USPOP / 100000
-    IMDTOTALS = [881, 21, 1110]
-    IMDTOTALS_2004 = [203, 24, 253]
-    IMDTOTALS_2000 = [442, 83, 699]
-    
-    # each incidence object (say res[i][2] where i is a simulation) 
-    # is a tensor (4 dimensional): [time (in years), ag, carriage, vaccine]
-
-    # for each simulation (of those who are not vaccineted -- though there should be zero people who are vaccinated)
-    # get the total number of carraige in 2007 per serogroup, over all age groups 
-    # convert it to total US population 
-    # divide with the IMD to get IMD probability 
-
-    # x[2] is the incidence object of each simulation (for each x simulation in res )
-    # first, dims=4 adds the incidence from vaccinated/not vaccinated groups (but from 1997 to 2004, there is no one in the not-vaccinated group)
-    # then we want to add accross age groups, which is dims=2, of the previous object
-    # the reduction brings it to 8×500×3×1 Array{Int64, 4}:
-    inc_peryear_perinf = reduce(hcat, [sum(sum(x[2], dims=4), dims=2) for x in res])
-    inc_peryear_perinf = dropdims(inc_peryear_perinf, dims=4) # drop the "vax/novax dimension"
-    
-    # get the number of years in the simulation -- use the incidence object 
-    LOY, _, _ = size(inc_peryear_perinf) # time x simulations x inftype 
-
-    # the index [1, :, :, :] gets only the first row (i.e. 1997) of every simulation
-    # take the mean of all the simulations
-    # and convert to US population 
-    firstyear = vec(mean(inc_peryear_perinf[1, :, :], dims=1) .* USUNIT)
-    
-    # divide by IMD (be careful to transpose it so column 1 is divided by the first element of IMD, etc )
-    prob =  [sc, sw, sy] .* IMDTOTALS ./ firstyear
-    println("prob: $prob")
-
-    # Now go through each simulation and get the average 
-    # number of carriage per year (average over simulations)
-    # so we can flip a coin to see how many of them developed IMD 
-    _yearly_avg = mean(inc_peryear_perinf, dims=2) # mean over the second dim will keep the carriage dimension open
-    yearly_avg = round.(Int64, reshape(_yearly_avg, (LOY, 3)) .* USUNIT) # 8 years x 3 inf types 
-
-    # for each column, flip that many coins to see how many IMD 
-    c_flips = map(x -> sum(rand(x) .< prob[1]), yearly_avg[:, 1])
-    w_flips = map(x -> sum(rand(x) .< prob[2]), yearly_avg[:, 2])
-    y_flips = map(x -> sum(rand(x) .< prob[3]), yearly_avg[:, 3])
-    imd_over_year = hcat(c_flips, w_flips, y_flips)
-    return imd_over_year
 end
 
 function plot_imd(imd_obj)
@@ -319,7 +276,6 @@ function plot_imd(imd_obj)
     # @gp :- imd_data[2, :] "with points title 'Data W' pt 7 lc 'green'"
     # @gp :- imd_data[3, :] "with points title 'Data Y' pt 7 lc 'blue'"
     # display(@gp)
-
     
     total_imd_sims = vec(sum(imd_obj, dims=2))
     total_imd_data = vec(sum(imd_data, dims=1))
