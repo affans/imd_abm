@@ -32,6 +32,12 @@ else
 end
 
 function launch_sims(nsims, startyear, endyear, adj_vac_opt, adj_vac_cov, adj_vac_age, base=0.00105, adj1=0.67, adj2=0.60, adj3=0.76)
+    # parameter options for the results (first draft)
+    # nsims = 500, startyear=1997, endyear=2035 
+    # adj_vac_opt = ("baseline", "r1", "r2") 
+    # adj_vac_cov = coverage for cov2 (irrelevant for baseline -- since cov2=0.61 fixed)
+    # adj_vac_age = age for cov2 (irrelevant for baseline -- since age=16 fixed)
+    
     # calibration to steady state=base=0.0011, adj1=0.65, adj2=0.49, adj3=0.73 
     # calibration to IMD (following steady state): (0.00105, 0.67, 0.60, 0.76)
     # note: this is with a cap of 2 (plus initial reset of cap at simulation start)
@@ -103,7 +109,7 @@ function process_carriage(res; writefile=false, fprefix="aa", fsuffix="baseline"
 
     # repackage as a matrix to save as csv 
     scr = hcat(carc_avg, carc_quant, carw_avg, carw_quant, cary_avg, cary_quant)
-    writefile && writedlm("./output/prevalence_$(fprefix)_$(fsuffix).csv", scr, ',')
+    writefile && writedlm("./output/prevalence_$(fsuffix).csv", scr, ',')
     return scr
 end
 
@@ -162,7 +168,7 @@ function process_sims(res; writefile=false, fprefix="aa", fsuffix="baseline")
     _v = [1, 2]  # vaccine 1 = incidence vaccine, 2 = incidence no vaccine
     for c in _c 
         for v in _v 
-        fname = "./output/incidence_$(fprefix)_car$(c)_vac$(v)_$(fsuffix).csv"
+        fname = "./output/incidence_car$(c)_vac$(v)_$(fsuffix).csv"
         # s is each simulation object which has two entries: [1]: prevalence,  [2]: incidence
         # for each incidence object s[2], 
         # it's a 4 dimensional object 
@@ -182,6 +188,7 @@ function fit_imd(res, sc=0.7, sw=1.35, sy=0.55; writefile=false, fprefix="aa", f
     # and x[2] is the incidence object
     # In this function we convert simulation carriage, and calculate probability of IMD 
     # based on 1997 (or some year between 1997 and 2004)
+    # To fit to IMD, run  xx = launch_sims(500, 1997, 2004, "baseline", 0.90, 17);
 
     nsim = length(res) 
     ntimeyrs, _, _, _ = size(res[1][2])  # since res[1][2] is the incidence matrix of the 1st simulation
@@ -212,25 +219,25 @@ function fit_imd(res, sc=0.7, sw=1.35, sy=0.55; writefile=false, fprefix="aa", f
     # and convert to US population 
     firstyear = vec(mean(inc_peryear_perinf[1, :, :], dims=1))
     
-    # divide by IMD (be careful to transpose it so column 1 is divided by the first element of IMD, etc )
+    # divide by IMD to get the probability of IMD per infection state
     prob =  [sc, sw, sy] .* IMDTOTALS ./ firstyear
+
     # Now go through each simulation, inftype, age group, and vaccine status  
     # and for each incidence in these sub groups, flip a coin 
     eff_against_imd = [Beta(18.687,5.582), Beta(8.723, 7.809), Beta(2.603, 2.501)]
-    
+    Random.seed!(1248)
     all_sim_incidence = [x[2] for x in res] # incidence objects from the simulation 
-    all_sim_imd = [] 
-    for (i, sim_inc) in enumerate(all_sim_incidence) # for each simulation 
-        sim_imd = similar(sim_inc, Float64) # create a structure similar to sim_inc (ie. time x age x carriage x vaccine)
+    all_sim_imd = []
+    for (i, sim_inc) in enumerate(all_sim_incidence) # for each simulation which gives a [time, age, inftype, vaccine]
+        sim_imd = similar(sim_inc, Float64) # create a structure similar to sim_inc (ie. time x age x carriage x vaccine) to store IMD cases
         time, ag, car, vax = axes(sim_imd) # get the axes for each dimension 
         for ic in [1, 2, 3] # carriage 1 2 3 
             for vt in [1, 2] # vaccine 1 = incidence vaccine, 2 = incidence no vaccine
-                inc_cnts = sim_inc[:, :, ic, vt]
+                samp_efficacy = [rand(eff_against_imd[1]), rand(eff_against_imd[2]), rand(eff_against_imd[3])]
+                inc_cnts = sim_inc[:, :, ic, vt] # get the carriage incidence counts (time x age)
                 imd_samples = map(inc_cnts) do x                     
-                    #coinflips = rand(x) # flip that many coins 
-                    efficacies = vt == 1 ? (1 - rand(eff_against_imd[ic])) : 1 # get that many efficacies only for vaccinated
+                    efficacies = vt == 1 ? (1 - samp_efficacy[ic]) : 1 # check for efficacy
                     probs = prob[ic] .* efficacies
-                    #sum(coinflips .< probs)
                     x * probs
                 end
                 sim_imd[:, :, ic, vt] .= imd_samples
@@ -243,7 +250,7 @@ function fit_imd(res, sc=0.7, sw=1.35, sy=0.55; writefile=false, fprefix="aa", f
     if writefile 
         for c in [1, 2, 3]  # carriage 1 2 3 
             for v in [1, 2] # vaccine 1 = incidence vaccine, 2 = incidence no vaccine
-                fname = "./output/imd_$(fprefix)_car$(c)_vac$(v)_$(fsuffix).csv"
+                fname = "./output/imd_car$(c)_vac$(v)_$(fsuffix).csv"
                 inc_extract = reduce(vcat, [s[:, :, c, v] for s in all_sim_imd])
                 writedlm(fname, inc_extract, ',')
             end 

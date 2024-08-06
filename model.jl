@@ -73,7 +73,7 @@ function run_model(simid, startyear, endyear, save_sim = false)
         currentyear = ytm[t]
         if t % 52 == 0 
             cov1, cov2 = get_coverage(currentyear) 
-            init_vaccine(cov1, cov2)
+            init_vaccine(cov1, cov2, currentyear)
         end 
         wv = timestep() 
         ss_inc[currentyear - (startyear - 1), :, :, :] += wv 
@@ -237,8 +237,14 @@ end
             @info "... getting coverage for R2" 
             if year ∈ 2025:2028
                 cov1 = 0.0
-                cov2 = p.adj_vax_cov
-            else 
+                cov2 = 0.61 # p.adj_vax_cov
+            elseif year == 2029
+                cov1 = 0.90 
+                cov2 = 0.61 # (i.e., this would be 61% of those who got vaccine at age 11 in 2024)
+            elseif year ==  2030
+                cov1 = 0.90
+                cov2 = 0.0 # because this would try to select 11 year olds from 2025 but we set cov1 to zero in 2025 
+            else # 2031 onward
                 cov1 = 0.90 
                 cov2 = p.adj_vax_cov
             end
@@ -248,7 +254,7 @@ end
     return cov1, cov2
 end
 
-function init_vaccine(cov1, cov2)
+function init_vaccine(cov1, cov2, year)
     # implementing vaccine every year starting in 2005
     # cov1, cov2 are coverage values for first dose and second dose
     cov1 + cov2 == 0 && return
@@ -257,7 +263,9 @@ function init_vaccine(cov1, cov2)
     # if r1, cov1 == 0 (past 2025) anyways so age doesn't matter -- this is NOT error checked
     cov1_agegroup = (572:623) ## baseline 11 years of age
     if p.adj_vax_opt == "r2" 
-        cov1_agegroup = convert_year_to_wkrange(15)
+        if year >= 2029
+            cov1_agegroup = convert_year_to_wkrange(15)
+        end
     end 
     # (cov1 > 0 && p.adj_vax_opt == "r1") && error("R1 vaccine should have cov1=0")
     cc1 = shuffle!(findall(x -> x.age ∈ cov1_agegroup, humans))
@@ -271,16 +279,21 @@ function init_vaccine(cov1, cov2)
     # for cov2 (could be first or second dose), 
     # find *everyone* 16 (or 15, 17) years of age and then multiply by coverage value
     cov2_agegroup = convert_year_to_wkrange(16) # baseline scenario
-    if p.adj_vax_opt ∈ ("r1", "r2")
+    if p.adj_vax_opt == "r1"
         cov2_agegroup = convert_year_to_wkrange(p.adj_vax_age)    
     end
+    if p.adj_vax_opt == "r2" 
+        if year >= 2031 # 2031 and beyond, 17 year olds get second dose (since 2029 is when 15 year olds get their first dose)
+            cov2_agegroup = convert_year_to_wkrange(17)
+        end
+    end
     # get everyone in this age group to maintain coverage
-    cc2 = shuffle!(findall(x -> x.age ∈ cov2_agegroup, humans))
-    tv2 = round(Int64, cov2 * length(cc2)) # total number of agents vaccinated    
+    cc2 = shuffle!(findall(x -> x.age ∈ cov2_agegroup && x.vac < 2, humans))
+    tv2 = round(Int64, cov2 * length(cc2)) - 1 # total number of agents vaccinated, substract 1 for stability
 
     # find agents who are eligble for second dose (i.e. got their first dose)
     # these would be the first agents to get the second dose -- and then select the rest from cc2
-    cc2_vax = shuffle!(findall(x -> x.age ∈ cov2_agegroup && x.vac > 0, humans))
+    cc2_vax = shuffle!(findall(x -> x.age ∈ cov2_agegroup && x.vac == 1, humans))
 
     # this is an error check
     # in baseline and r2 scenarios, we want cov2 to be only for second dose 
@@ -289,8 +302,8 @@ function init_vaccine(cov1, cov2)
     if p.adj_vax_opt ∈ ("baseline", "r2")
         if length(cc2_vax) < tv2
             @info "Not enough agents in cc2_vax to vaccinate for second dose"
-            @info "total needed to vaccinate: $tv2, total with one dose $(length(cc2_vax))"
-            error("Not enough agents in cc2_vax to vaccinate for second dose")
+            @info "total needed to vaccinate: $tv2, total with one dose $(length(cc2_vax)), year: $year"
+            error("Not enough agents in cc2_vax to vaccinate for second dose, year: $year")
         end
     end
     # select the agents for cov2 -- prioritize those needing second dose
@@ -351,9 +364,11 @@ end
 
 function vaccinate(x)
     x.vac += 1 # increase dose count
-    x.eff = rand(VAC_EFF) # set efficacy 
+    if x.eff == 0.0 # if efficacy is zero (i.e. first dose, or first dose has expired)
+        x.eff = rand(VAC_EFF) # set efficacy
+    end
     x.exp = x.age + rand(VAC_DURATION) # set expiry
-    x.vac == 3 && error("someone got 3 doses.")
+    x.vac == 3 && error("ID $(x.idx) / 3 doses - vac: $(x.vac), age: $(convert_week_to_year(x.age))")
 end
 
 function naturalhistory(x::Human)
@@ -442,7 +457,8 @@ function age_dynamics()
     # # need to a total of `num_to_die` including the natural deaths 
     # # so fill in the rest of deaths by randomly sampling from the population
     # # ensure that those transitioning to 1-4 and 100+ are not part of sampling
-    eligible = findall(x -> x.age > 52 && x.age < 5200, humans)
+    # x.vac == 0 -- don't remove agents that are vaccinated for stability of vaccine functions
+    eligible = findall(x -> x.age > 52 && x.age < 5200 && x.vac == 0, humans)
     
     # # add to the death IDs randomly selected ones 
     for _ in 1:(num_to_die - length(deathids))

@@ -87,7 +87,8 @@ See table for summary
 note: adjusted scenario means `cov1 = 0`
 ```
 
-
+#### Option 2 (R2)
+Evaluates policy change. First dose  
 
 
 ### Details, Assumptions, and Notes
