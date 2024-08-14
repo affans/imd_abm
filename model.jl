@@ -43,9 +43,9 @@ const POPSIZE = 100000
 
 # distributions 
 const DISTR_CARRIAGE = Poisson(42) # From Feldman paper, 9.6 months ~ 42 weeks
-const DISTR_RECOVER = Poisson(244)
+const DISTR_RECOVER = Poisson(245)
 const VAC_EFF = Beta(5.68, 2.1437)
-const VAC_DURATION = Poisson(244) # seyed to go check
+const VAC_DURATION = Poisson(261) # seyed to go check
 
 includet("helpers.jl")
 
@@ -57,24 +57,25 @@ function run_model(simid, startyear, endyear, save_sim = false)
     @info "Saving simulation data? $(save_sim)"
     
     # set seed to simulation id
-    Random.seed!(simid*556)
+    Random.seed!(simid*264)
 
     tm_years = startyear:endyear 
     ytm = repeat(tm_years, inner=52) # create an array with the years for indexing the year
     totaltime = length(ytm) # in weeks for the time loop 
     @info "Year Range: $(tm_years), Run time (in years:) $(length(tm_years)), (in weeks:) $totaltime" 
-    startyear ∈ 2005:2035 && @info "Start year set between 2005-2035, vaccine code will run"
-
+    
     # data collection -- allocate memory 
     ss_inc = zeros(Int16, length(tm_years), length(AG_BRAC), 3, 2) # time(in years) x ag x 3carriage x 2vaccine
     ss_carriage = zeros(Int64, 6, totaltime) # data 3 rows for C, W, Y since
 
     @inbounds for t in 1:totaltime 
         currentyear = ytm[t]
-        if t % 52 == 0 
-            cov1, cov2 = get_coverage(currentyear) 
-            init_vaccine(cov1, cov2, currentyear)
-        end 
+        if currentyear >= 2005 # vaccine starts in 2005
+            if t % 52 == 0 
+                cov1, cov2 = get_coverage(currentyear) 
+                init_vaccine(cov1, cov2, currentyear)
+            end 
+        end
         wv = timestep() 
         ss_inc[currentyear - (startyear - 1), :, :, :] += wv 
         ss_carriage[:, t] .= collect_data()
@@ -87,12 +88,12 @@ function run_model(simid, startyear, endyear, save_sim = false)
     # The steady state files are stored in the cluster and not checked into repo 
     
     # commenting this out since we don't want to be overwriting the calibration files 
-    # if save_sim
-    #     @info "saving simulation to jld2"
-    #     file = jldopen("/data/imd_abm_calibration/sim$(simid)n.jld2", "w") 
-    #     file["h"] = humans #save the humans object 
-    #     close(file)
-    # end
+    if save_sim
+        @info "saving simulation to jld2"
+        file = jldopen("/data/imd_abm_calibration/sim$(simid)n.jld2", "w") 
+        file["h"] = humans #save the humans object 
+        close(file)
+    end
     return ss_carriage, ss_inc
 end
 
@@ -176,6 +177,7 @@ function init_disease()
                                 Uniform(0.042, 0.118), Uniform(0.055, 0.174), 
                                 Uniform(0.106, 0.334), Uniform(0.053, 0.264), 
                                 Uniform(0.034, 0.125), Uniform(0.026, 0.090)])
+    #ag_carriage_prev = [0.085, 0.091, 0.118, 0.174, 0.334, 0.264, 0.125, 0.090] ./ 4 # equilibrium values
 
     _sero_prop = [0.0, 0.0, 0.0] # Index: 1=C, 2=W, 3=Y -- ORDER MATTERS
     _sero_prop[1] = rand(Uniform(0.41, 0.47)) # SERO C
