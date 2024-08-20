@@ -57,17 +57,18 @@ function run_all()
 
     calibrated_beta_values = (base=0.00104, adj1=0.65, adj2=0.58, adj3=0.66)
     xx = launch_sims(500, 1995, 2035, "baseline", 0.61, 16, calibrated_beta_values...);
-
-    #xx = launch_sims(500, 1995, 2035, "r1", 0.61, 15, calibrated_beta_values);
-    #xx = launch_sims(500, 1995, 2035, "r1", 0.90, 15, calibrated_beta_values);
-    #xx = launch_sims(500, 1995, 2035, "r1", 0.61, 16, calibrated_beta_values);
-    #xx = launch_sims(500, 1995, 2035, "r1", 0.90, 16, calibrated_beta_values);
-    #xx = launch_sims(500, 1995, 2035, "r1", 0.61, 17, calibrated_beta_values);
-    #xx = launch_sims(500, 1995, 2035, "r1", 0.90, 17, calibrated_beta_values);
-    #xx = launch_sims(500, 1995, 2035, "r2", 0.90, 17, calibrated_beta_values);
-    #xx = launch_sims(500, 1995, 2035, "r2", 0.61, 17, calibrated_beta_values);
+    xx = launch_sims(500, 1995, 2035, "r1", 0.61, 15, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r1", 0.90, 15, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r1", 0.61, 16, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r1", 0.90, 16, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r1", 0.61, 17, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r1", 0.90, 17, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r2", 0.90, 17, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r2", 0.61, 17, calibrated_beta_values...);
+    # r3 here, cov is not relevant but put it here for correct filename
+    xx = launch_sims(500, 1995, 2035, "r3", 1.0, 16, calibrated_beta_values...);
+    xx = launch_sims(500, 1995, 2035, "r3", 1.0, 17, calibrated_beta_values...);
 end
-
 
 function launch_sims(nsims, startyear, endyear, adj_vac_opt, adj_vac_cov, adj_vac_age, base=0.00104, adj1=0.65, adj2=0.58, adj3=0.66)
     # parameter options for the results (aug 12) 

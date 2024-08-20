@@ -235,24 +235,42 @@ end
         # R2 -- first dose is shifted to 15 year olds (only for 2029+, see logic by Seyed)
         # Do this by setting cov1 = 0.0 (but making sure cov2 only selects those who got first dose)
         # Then in 2029+, set cov1 value
-        if p.adj_vax_opt == "r2"    
-            @info "... getting coverage for R2" 
-            if year ∈ 2025:2028
+        if p.adj_vax_opt == "r2"
+            #p.adj_vax_cov = 90
+            if year == 2025
                 cov1 = 0.0
-                cov2 = 0.61 # p.adj_vax_cov
+                cov2 = (p.adj_vax_cov > 0.83) ? 0.83 : p.adj_vax_cov 
+                # since in 2020, the first dose coverage (for 11 year olds) is 0.83 
+            elseif year == 2026
+                cov1 = 0.0
+                cov2 = (p.adj_vax_cov > 0.86) ? 0.86 : p.adj_vax_cov 
+                # since in 2021, the first dose coverage (for 11 year olds) is 0.86
+            elseif year ∈ 2027:2028
+                cov1 = 0.0
+                cov2 = p.adj_vax_cov
             elseif year == 2029
-                cov1 = 0.90 
-                cov2 = 0.61 # (i.e., this would be 61% of those who got vaccine at age 11 in 2024)
+                cov1 = 0.90
+                cov2 = p.adj_vax_cov # (i.e., this would be 61% (or 90%) of those who got vaccine at age 11 in 2024)
+                # since it doesn't make sense that second dose coverage for new cohort would be 90% but old cohort would be 61%. 
+                # if coverage goes to 90% for 15 year olds, it should be 90% for 11 year olds as well
             elseif year ==  2030
                 cov1 = 0.90
                 cov2 = 0.0 # because this would try to select 11 year olds from 2025 but we set cov1 to zero in 2025 
             else # 2031 onward
-                cov1 = 0.90 
+                cov1 = 0.90
                 cov2 = p.adj_vax_cov
             end
         end
+
+        # R3 -- 100% coverage for those who got their first dose
+        # This is very similar to baseline -- just that second dose coverage is increased to include everyone 
+        if p.adj_vax_opt == "r3"    
+            cov1 = 0.9
+            cov2 = 0.9 # to ensure all of the first dose gets second dose, this is modified in the vaccine function
+        end
+
     end
-    @info "final cov values scen: $(p.adj_vax_opt) year $year cov1 $cov1 cov2 $cov2"
+    @info "coveragə values scenario: $(p.adj_vax_opt) year $year cov1 $cov1 cov2 $cov2"
     return cov1, cov2
 end
 
@@ -289,25 +307,44 @@ function init_vaccine(cov1, cov2, year)
             cov2_agegroup = convert_year_to_wkrange(17)
         end
     end
-    # get everyone in this age group to maintain coverage
+    if p.adj_vax_opt == "r3"
+        if year >= 2025 
+            cov2_agegroup = convert_year_to_wkrange(p.adj_vax_age)   
+        end
+    end
+
+    # find the total number of people in this age group to vaccinate 
+    # the cov2 value is "overall" coverage (i.e. not x% of those who got first dose, just x% of the population)
+    # but we make sure that in baseline (and other scenarios), those who got first dose get second dose with cov2 coverage
     cc2 = shuffle!(findall(x -> x.age ∈ cov2_agegroup && x.vac < 2, humans))
     tv2 = round(Int64, cov2 * length(cc2)) - 1 # total number of agents vaccinated, substract 1 for stability
 
     # find agents who are eligble for second dose (i.e. got their first dose)
-    # these would be the first agents to get the second dose -- and then select the rest from cc2
+    # these would be the first agents to get the second dose -- and then select the rest from cc2 (it would be their first dose)
     cc2_vax = shuffle!(findall(x -> x.age ∈ cov2_agegroup && x.vac == 1, humans))
+    
+    if p.adj_vax_opt == "r3"
+        if year >= 2025
+            tv2 = length(cc2_vax) # force everyone who got first dose to get second dose regardess or cov2 value
+        end
+    end
 
-    # this is an error check
+    @info "vaccine funct before error (scen: $(p.adj_vax_opt)) dynamics year: $year, cov2: $cov2, cc2=$(length(cc2)), cc2_vax=$(length(cc2_vax)), tv2=$tv2"
+
+    # error checks
     # in baseline and r2 scenarios, we want cov2 to be only for second dose 
     # so make sure the length of cc2_vax is greater than tv2
     # for r1, cc2_vax is likely going to become zero as we stopped first dose (so folks under cov2 get their first dose eventually)
-    if p.adj_vax_opt ∈ ("baseline", "r2")
+
+    if p.adj_vax_opt ∈ ("baseline", "r2", "r3")
         if length(cc2_vax) < tv2
             @info "Not enough agents in cc2_vax to vaccinate for second dose"
             @info "total needed to vaccinate: $tv2, total with one dose $(length(cc2_vax)), year: $year"
+            flush(stdout)
             error("Not enough agents in cc2_vax to vaccinate for second dose, year: $year")
         end
     end
+
     # select the agents for cov2 -- prioritize those needing second dose
     _elig = append!(copy(cc2_vax), setdiff(cc2, cc2_vax)) # faster than splatting
     #_elig = [cc2_vax..., setdiff(cc2, cc2_vax)...] # too many allocations
