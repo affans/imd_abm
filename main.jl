@@ -301,7 +301,7 @@ function process_imd(res, sc=0.00004187, sw=0.000013548, sy=0.0000480388; writef
 
     # Now go through each simulation, inftype, age group, and vaccine status  
     # and for each incidence in these sub groups, flip a coin 
-    eff_against_imd = [Beta(18.687,5.582), Beta(8.723, 7.809), Beta(2.603, 2.501)]
+    eff_against_imd = [Beta(18.68838313,5.58224431), Beta(5.525016302, 2.19696124), Beta(2.529281944, 2.430094417)]
     Random.seed!(482)
     all_sim_incidence = [x[2] for x in res] # incidence objects from the simulation 
     all_sim_imd = []
