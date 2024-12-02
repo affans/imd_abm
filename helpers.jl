@@ -46,8 +46,14 @@ function get_coverage_distribution()
     (first0/cc0, second0/cc0, first2/cc2, second2/cc2)
 end
 
+@inline function convert_week_to_year(x::Int64)
+    if x < 0 || x > 5252
+        throw(ArgumentError("x should be between 0 and 5252"))
+    end
+    res = floor(Int64, x/52)
+    return res
+end
 @inline convert_year_to_wkrange(x::Int64) = (x*52):(x*52)+51 # convert year to week range
-@inline convert_week_to_year(x::Int64) = floor(Int64, x/52)
 
 function infoid(id)
     # an agent information function
